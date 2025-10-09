@@ -1,0 +1,45 @@
+# Node / Next.js
+node_modules/
+.next/
+.turbo/
+.vercel/
+dist/
+build/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Ambiente
+.env
+.env.local
+.env.*.local
+
+# Backend storage local (dev)
+storage/
+storage/**
+
+# Sistemas operacionais
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs/editores
+.vscode/
+.idea/
+*.swp
+
+# Test/Reports
+.jest/
+.playwright/
+cypress/
+*.lcov
+
+# Cache de ferramentas
+.cache/
+.eslintcache
+stylelintcache/
