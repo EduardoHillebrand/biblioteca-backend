@@ -51,7 +51,7 @@ function removeDirIfExists(dir: string) {
 // GET /books lista/pesquisa
 router.get("/books", async (req, res) => {
   await connectDB();
-  const { q, language, tag, yearFrom, yearTo } = req.query as any;
+  const { q, language, tag, yearFrom, yearTo, sortBy, order } = req.query as any;
 
   const filter: any = {};
   if (language) filter.language = language;
@@ -59,6 +59,17 @@ router.get("/books", async (req, res) => {
   if (yearFrom || yearTo) filter.year = {};
   if (yearFrom) filter.year.$gte = Number(yearFrom);
   if (yearTo) filter.year.$lte = Number(yearTo);
+
+  // whitelist de campos de ordenação
+  const allowedSort: Record<string, string> = {
+    createdAt: "createdAt",
+    updatedAt: "updatedAt",
+    title: "title",
+    year: "year",
+  };
+  const sortField = allowedSort[String(sortBy)] || "createdAt";
+  const sortDir = String(order) === "asc" ? 1 : -1;
+  const sortObj: any = { [sortField]: sortDir };
 
   let query = Book.find(filter).select("title authors year language tags slug coverUrl");
   if (q) {
@@ -70,7 +81,7 @@ router.get("/books", async (req, res) => {
     }).select("title authors year language tags slug coverUrl");
   }
 
-  const items = await query.limit(60).lean();
+  const items = await query.sort(sortObj).limit(60).lean();
   res.json({ items });
 });
 
