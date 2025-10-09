@@ -4,21 +4,22 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { connectDB } from "../db";
-import Book from "../models/Book";
+import Book, { BookLean } from "../models/Book";
 import { requireAdmin } from "../middleware/auth";
 import { slugify } from "../utils/slugify";
-import User from "../models/User"; 
+import User from "../models/User";
 
 const router = Router();
 
-const storageDir = process.env.STORAGE_DIR || path.join(process.cwd(), "storage");
+const storageDir =
+  process.env.STORAGE_DIR || path.join(process.cwd(), "storage");
 fs.mkdirSync(path.join(storageDir, "books"), { recursive: true });
 fs.mkdirSync(path.join(storageDir, "covers"), { recursive: true });
 
 // memória + limite de tamanho do arquivo
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB, ajuste se precisar
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
 });
 
 function escapeRegExp(str: string) {
@@ -41,17 +42,28 @@ async function ensureUniqueSlug(base: string) {
 }
 
 function removeIfExists(p: string) {
-  try { fs.rmSync(p, { force: true }); } catch {}
+  try {
+    fs.rmSync(p, { force: true });
+  } catch {}
 }
 function removeDirIfExists(dir: string) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {}
 }
-
 
 // GET /books lista/pesquisa
 router.get("/books", async (req, res) => {
   await connectDB();
-  const { q, language, tag, yearFrom, yearTo, sortBy, order } = req.query as any;
+  const {
+    q,
+    language,
+    tag,
+    yearFrom,
+    yearTo,
+    orderBy = "createdAt",
+    orderDir = "desc",
+  } = req.query as any;
 
   const filter: any = {};
   if (language) filter.language = language;
@@ -60,35 +72,34 @@ router.get("/books", async (req, res) => {
   if (yearFrom) filter.year.$gte = Number(yearFrom);
   if (yearTo) filter.year.$lte = Number(yearTo);
 
-  // whitelist de campos de ordenação
-  const allowedSort: Record<string, string> = {
-    createdAt: "createdAt",
-    updatedAt: "updatedAt",
-    title: "title",
-    year: "year",
-  };
-  const sortField = allowedSort[String(sortBy)] || "createdAt";
-  const sortDir = String(order) === "asc" ? 1 : -1;
-  const sortObj: any = { [sortField]: sortDir };
+  const sort: Record<string, 1 | -1> = {};
+  const allowed = new Set(["createdAt", "year", "title"]);
+  const key = allowed.has(String(orderBy)) ? String(orderBy) : "createdAt";
+  sort[key] = String(orderDir).toLowerCase() === "asc" ? 1 : -1;
 
-  let query = Book.find(filter).select("title authors year language tags slug coverUrl");
+  let query = Book.find(filter)
+    .select("title authors year language tags slug coverUrl")
+    .sort(sort);
+
   if (q) {
     const parts = String(q).trim().split(/\s+/).map(escapeRegExp);
     const re = new RegExp(parts.map((p) => `(?=.*${p})`).join(""), "i");
     query = Book.find({
       ...filter,
       $or: [{ title: re }, { description: re }, { authors: re }, { tags: re }],
-    }).select("title authors year language tags slug coverUrl");
+    })
+      .select("title authors year language tags slug coverUrl")
+      .sort(sort);
   }
 
-  const items = await query.sort(sortObj).limit(60).lean();
+  const items = await query.limit(60).lean<BookLean[]>();
   res.json({ items });
 });
 
 // GET /books/:slug detalhe
 router.get("/books/:slug", async (req, res) => {
   await connectDB();
-  const book = await Book.findOne({ slug: req.params.slug }).lean();
+  const book = await Book.findOne({ slug: req.params.slug }).lean<BookLean | null>();
   if (!book) return res.status(404).json({ error: "Não encontrado" });
   res.json(book);
 });
@@ -106,7 +117,8 @@ router.post(
     await connectDB();
 
     const metaRaw =
-      req.body.meta || (req.files?.meta?.[0] && req.files.meta[0].buffer.toString("utf8"));
+      req.body.meta ||
+      (req.files?.meta?.[0] && req.files.meta[0].buffer.toString("utf8"));
     if (!metaRaw) return res.status(400).json({ error: "meta ausente" });
 
     const meta = JSON.parse(metaRaw);
@@ -146,7 +158,7 @@ router.post(
       description: meta.description,
       pdfPath,
       coverPath,
-      pdfUrl: `/files/pdf/${slug}`,     // continua servindo por slug
+      pdfUrl: `/files/pdf/${slug}`, // continua servindo por slug
       coverUrl: `/files/cover/${slug}`, // idem
     });
 
@@ -157,7 +169,7 @@ router.post(
 // arquivos
 router.get("/files/cover/:slug", async (req, res) => {
   await connectDB();
-  const book = await Book.findOne({ slug: req.params.slug }).lean();
+  const book = await Book.findOne({ slug: req.params.slug }).lean<BookLean | null>();
   if (!book?.coverPath) return res.status(404).end();
   res.setHeader("Content-Type", "image/jpeg");
   res.setHeader("Cache-Control", "public, max-age=604800");
@@ -167,24 +179,21 @@ router.get("/files/cover/:slug", async (req, res) => {
 // PDF com suporte a Range
 router.get("/files/pdf/:slug", async (req, res) => {
   await connectDB();
-  const book = await Book.findOne({ slug: req.params.slug }).lean();
+  const book = await Book.findOne({ slug: req.params.slug }).lean<BookLean | null>();
   if (!book?.pdfPath) return res.status(404).end();
 
   const stat = fs.statSync(book.pdfPath);
   const range = req.headers.range;
-
   if (!range) {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Length", String(stat.size));
     res.setHeader("Accept-Ranges", "bytes");
     return fs.createReadStream(book.pdfPath).pipe(res);
   }
-
   const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
   const start = parseInt(startStr, 10);
   const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
   const chunk = end - start + 1;
-
   res.status(206);
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Length", String(chunk));
@@ -193,21 +202,24 @@ router.get("/files/pdf/:slug", async (req, res) => {
   fs.createReadStream(book.pdfPath, { start, end }).pipe(res);
 });
 
-
+// DELETE /admin/books/:slug remove livro e arquivos
 router.delete("/admin/books/:slug", requireAdmin, async (req, res) => {
   await connectDB();
   const slug = req.params.slug;
 
-  const book = await Book.findOne({ slug });
+  const book = await Book.findOne({ slug }).lean<BookLean | null>();
   if (!book) return res.status(404).json({ error: "Não encontrado" });
 
   // remove referências em favoritos
-  await User.updateMany({ favorites: book._id }, { $pull: { favorites: book._id } });
+  await User.updateMany(
+    { favorites: book._id },
+    { $pull: { favorites: book._id } }
+  );
 
   // apaga arquivos e pastas do slug
   const bookDir = path.join(storageDir, "books", slug);
   const coverDir = path.join(storageDir, "covers", slug);
-  // se você salvou caminhos específicos no banco, também remove por caminho
+
   if (book.pdfPath) removeIfExists(book.pdfPath);
   if (book.coverPath) removeIfExists(book.coverPath);
   removeDirIfExists(bookDir);
@@ -218,6 +230,5 @@ router.delete("/admin/books/:slug", requireAdmin, async (req, res) => {
 
   return res.status(204).send();
 });
-
 
 export default router;

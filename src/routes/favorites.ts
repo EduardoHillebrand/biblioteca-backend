@@ -2,31 +2,40 @@ import { Router } from "express";
 import { connectDB } from "../db";
 import { requireAuth } from "../middleware/auth";
 import User from "../models/User";
-import Book from "../models/Book";
+import Book, { BookLean } from "../models/Book";
 
 const router = Router();
 
-router.get("/favorites", requireAuth, async (req, res) => {
+// GET favoritos do usuário logado
+router.get("/favorites", requireAuth, async (req: any, res) => {
   await connectDB();
-  const user = await User.findById(req.user!.sub).populate("favorites", "title authors slug coverUrl").lean();
-  res.json({ items: user?.favorites || [] });
+  const u = await User.findById(req.user.sub)
+    .populate("favorites", "title authors slug coverUrl")
+    .lean<{ _id: any; favorites?: Pick<BookLean,"title"|"authors"|"slug"|"coverUrl">[] } | null>();
+
+  return res.json({ items: u?.favorites ?? [] });
 });
 
-router.post("/favorites", requireAuth, async (req, res) => {
-  const { slug } = req.body || {};
+// POST adiciona favorito
+router.post("/favorites", requireAuth, async (req: any, res) => {
   await connectDB();
-  const book = await Book.findOne({ slug }).select("_id");
+  const { slug } = req.body as { slug?: string };
+  if (!slug) return res.status(400).json({ error: "slug é obrigatório" });
+  const book = await Book.findOne({ slug }).select("_id").lean<{ _id: any } | null>();
   if (!book) return res.status(404).json({ error: "Livro não encontrado" });
-  await User.updateOne({ _id: req.user!.sub }, { $addToSet: { favorites: book._id } });
-  res.json({ ok: true });
+  await User.updateOne({ _id: req.user.sub }, { $addToSet: { favorites: book._id } });
+  return res.json({ ok: true });
 });
 
-router.delete("/favorites/:slug", requireAuth, async (req, res) => {
+// DELETE remove favorito
+router.delete("/favorites", requireAuth, async (req: any, res) => {
   await connectDB();
-  const book = await Book.findOne({ slug: req.params.slug }).select("_id");
+  const slug = String(req.query.slug || "");
+  if (!slug) return res.status(400).json({ error: "slug é obrigatório" });
+  const book = await Book.findOne({ slug }).select("_id").lean<{ _id: any } | null>();
   if (!book) return res.status(404).json({ error: "Livro não encontrado" });
-  await User.updateOne({ _id: req.user!.sub }, { $pull: { favorites: book._id } });
-  res.json({ ok: true });
+  await User.updateOne({ _id: req.user.sub }, { $pull: { favorites: book._id } });
+  return res.json({ ok: true });
 });
 
 export default router;
