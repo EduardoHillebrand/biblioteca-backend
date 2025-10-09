@@ -1,0 +1,12 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - mongo
+    expose:
+      - "4000"
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
