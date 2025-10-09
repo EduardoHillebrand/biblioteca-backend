@@ -7,6 +7,7 @@ import { connectDB } from "../db";
 import Book from "../models/Book";
 import { requireAdmin } from "../middleware/auth";
 import { slugify } from "../utils/slugify";
+import User from "../models/User"; 
 
 const router = Router();
 
@@ -38,6 +39,14 @@ async function ensureUniqueSlug(base: string) {
   }
   return s;
 }
+
+function removeIfExists(p: string) {
+  try { fs.rmSync(p, { force: true }); } catch {}
+}
+function removeDirIfExists(dir: string) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
+
 
 // GET /books lista/pesquisa
 router.get("/books", async (req, res) => {
@@ -172,5 +181,32 @@ router.get("/files/pdf/:slug", async (req, res) => {
   res.setHeader("Accept-Ranges", "bytes");
   fs.createReadStream(book.pdfPath, { start, end }).pipe(res);
 });
+
+
+router.delete("/admin/books/:slug", requireAdmin, async (req, res) => {
+  await connectDB();
+  const slug = req.params.slug;
+
+  const book = await Book.findOne({ slug });
+  if (!book) return res.status(404).json({ error: "Não encontrado" });
+
+  // remove referências em favoritos
+  await User.updateMany({ favorites: book._id }, { $pull: { favorites: book._id } });
+
+  // apaga arquivos e pastas do slug
+  const bookDir = path.join(storageDir, "books", slug);
+  const coverDir = path.join(storageDir, "covers", slug);
+  // se você salvou caminhos específicos no banco, também remove por caminho
+  if (book.pdfPath) removeIfExists(book.pdfPath);
+  if (book.coverPath) removeIfExists(book.coverPath);
+  //removeDirIfExists(bookDir);
+  //removeDirIfExists(coverDir);
+
+  // apaga do banco
+  await Book.deleteOne({ _id: book._id });
+
+  return res.status(204).send();
+});
+
 
 export default router;
