@@ -2,24 +2,48 @@ import { Router } from "express";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { connectDB } from "../db";
 import Book from "../models/Book";
 import { requireAdmin } from "../middleware/auth";
 import { slugify } from "../utils/slugify";
 
 const router = Router();
+
 const storageDir = process.env.STORAGE_DIR || path.join(process.cwd(), "storage");
 fs.mkdirSync(path.join(storageDir, "books"), { recursive: true });
 fs.mkdirSync(path.join(storageDir, "covers"), { recursive: true });
 
-const upload = multer({ storage: multer.memoryStorage() });
+// memória + limite de tamanho do arquivo
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB, ajuste se precisar
+});
 
-function escapeRegExp(str: string) { return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function escapeRegExp(str: string) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// nome aleatório hexadecimal, ex 16 chars
+function randomName(len = 16) {
+  return crypto.randomBytes(len / 2).toString("hex");
+}
+
+// garante slug único no banco
+async function ensureUniqueSlug(base: string) {
+  let s = base;
+  let i = 2;
+  while (await Book.exists({ slug: s })) {
+    s = `${base}-${i++}`;
+  }
+  return s;
+}
 
 // GET /books lista/pesquisa
 router.get("/books", async (req, res) => {
   await connectDB();
   const { q, language, tag, yearFrom, yearTo } = req.query as any;
+
   const filter: any = {};
   if (language) filter.language = language;
   if (tag) filter.tags = tag;
@@ -50,37 +74,65 @@ router.get("/books/:slug", async (req, res) => {
 });
 
 // POST /admin/books cria livro (admin)
-router.post("/admin/books", requireAdmin, upload.fields([{ name: "pdf", maxCount: 1 }, { name: "cover", maxCount: 1 }, { name: "meta", maxCount: 1 }]), async (req: any, res) => {
-  await connectDB();
-  const metaRaw = req.body.meta || (req.files?.meta?.[0] && req.files.meta[0].buffer.toString("utf8"));
-  if (!metaRaw) return res.status(400).json({ error: "meta ausente" });
-  const meta = JSON.parse(metaRaw);
+router.post(
+  "/admin/books",
+  requireAdmin,
+  upload.fields([
+    { name: "pdf", maxCount: 1 },
+    { name: "cover", maxCount: 1 },
+    { name: "meta", maxCount: 1 },
+  ]),
+  async (req: any, res) => {
+    await connectDB();
 
-  const slug = meta.slug || slugify(meta.title);
-  const pdfFile = req.files?.pdf?.[0];
-  const coverFile = req.files?.cover?.[0];
-  if (!pdfFile || !coverFile) return res.status(400).json({ error: "pdf e cover são obrigatórios" });
+    const metaRaw =
+      req.body.meta || (req.files?.meta?.[0] && req.files.meta[0].buffer.toString("utf8"));
+    if (!metaRaw) return res.status(400).json({ error: "meta ausente" });
 
-  const pdfPath = path.join(storageDir, "books", `${slug}.pdf`);
-  const coverPath = path.join(storageDir, "covers", `${slug}.jpg`);
-  fs.writeFileSync(pdfPath, pdfFile.buffer);
-  fs.writeFileSync(coverPath, coverFile.buffer);
+    const meta = JSON.parse(metaRaw);
+    if (!meta?.title) return res.status(400).json({ error: "title é obrigatório" });
 
-  const book = await Book.create({
-    slug,
-    title: meta.title,
-    authors: meta.authors || [],
-    year: meta.year,
-    language: meta.language,
-    tags: meta.tags || [],
-    description: meta.description,
-    pdfPath,
-    coverPath,
-    pdfUrl: `/files/pdf/${slug}`,
-    coverUrl: `/files/cover/${slug}`,
-  });
-  res.json({ id: book._id, slug: book.slug });
-});
+    const baseSlug = meta.slug || slugify(meta.title);
+    const slug = await ensureUniqueSlug(baseSlug);
+
+    const pdfFile = req.files?.pdf?.[0];
+    const coverFile = req.files?.cover?.[0];
+    if (!pdfFile || !coverFile)
+      return res.status(400).json({ error: "pdf e cover são obrigatórios" });
+
+    // cria pastas por slug
+    const bookDir = path.join(storageDir, "books", slug);
+    const coverDir = path.join(storageDir, "covers", slug);
+    fs.mkdirSync(bookDir, { recursive: true });
+    fs.mkdirSync(coverDir, { recursive: true });
+
+    // nomes aleatórios mantendo extensão
+    const pdfName = `${randomName(16)}.pdf`;
+    const coverName = `${randomName(16)}.jpg`;
+
+    const pdfPath = path.join(bookDir, pdfName);
+    const coverPath = path.join(coverDir, coverName);
+
+    fs.writeFileSync(pdfPath, pdfFile.buffer);
+    fs.writeFileSync(coverPath, coverFile.buffer);
+
+    const book = await Book.create({
+      slug,
+      title: meta.title,
+      authors: meta.authors || [],
+      year: meta.year,
+      language: meta.language,
+      tags: meta.tags || [],
+      description: meta.description,
+      pdfPath,
+      coverPath,
+      pdfUrl: `/files/pdf/${slug}`,     // continua servindo por slug
+      coverUrl: `/files/cover/${slug}`, // idem
+    });
+
+    res.json({ id: book._id, slug: book.slug });
+  }
+);
 
 // arquivos
 router.get("/files/cover/:slug", async (req, res) => {
@@ -88,6 +140,7 @@ router.get("/files/cover/:slug", async (req, res) => {
   const book = await Book.findOne({ slug: req.params.slug }).lean();
   if (!book?.coverPath) return res.status(404).end();
   res.setHeader("Content-Type", "image/jpeg");
+  res.setHeader("Cache-Control", "public, max-age=604800");
   fs.createReadStream(book.coverPath).pipe(res);
 });
 
@@ -99,15 +152,19 @@ router.get("/files/pdf/:slug", async (req, res) => {
 
   const stat = fs.statSync(book.pdfPath);
   const range = req.headers.range;
+
   if (!range) {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Length", String(stat.size));
+    res.setHeader("Accept-Ranges", "bytes");
     return fs.createReadStream(book.pdfPath).pipe(res);
   }
+
   const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
   const start = parseInt(startStr, 10);
   const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
   const chunk = end - start + 1;
+
   res.status(206);
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Length", String(chunk));
