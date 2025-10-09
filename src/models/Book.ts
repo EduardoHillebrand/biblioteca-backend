@@ -12,6 +12,7 @@ const BookSchema = new Schema({
   coverUrl: String,
   pdfPath: String,
   pdfUrl: String,
+  posicao: { type: Number, default: 0},
 }, { timestamps: true });
 
 // índice de texto sem usar o campo "language"
