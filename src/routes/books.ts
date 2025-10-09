@@ -210,8 +210,8 @@ router.delete("/admin/books/:slug", requireAdmin, async (req, res) => {
   // se você salvou caminhos específicos no banco, também remove por caminho
   if (book.pdfPath) removeIfExists(book.pdfPath);
   if (book.coverPath) removeIfExists(book.coverPath);
-  //removeDirIfExists(bookDir);
-  //removeDirIfExists(coverDir);
+  removeDirIfExists(bookDir);
+  removeDirIfExists(coverDir);
 
   // apaga do banco
   await Book.deleteOne({ _id: book._id });
