@@ -10,8 +10,12 @@ declare global {
 function getToken(req: Request) {
   const h = req.header("authorization");
   if (h?.startsWith("Bearer ")) return h.slice(7);
-  const cookie = req.headers.cookie?.match(/(?:^|;)\s*token=([^;]+)/);
-  return cookie ? decodeURIComponent(cookie[1]) : null;
+  // se estiver usando cookie-parser, o token fica aqui:
+  // @ts-ignore
+  if (req.cookies?.token) return req.cookies.token;
+  // fallback sem cookie-parser
+  const m = req.headers.cookie?.match(/(?:^|;)\s*token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {

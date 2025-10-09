@@ -40,9 +40,12 @@ router.post("/login", async (req, res) => {
 });
 
 router.get("/me", async (req, res) => {
-  // me simples via token no header ou cookie
-  const token = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+  const bearer = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null;
+  // @ts-ignore
+  const cookieToken = req.cookies?.token as string | undefined;
+  const token = bearer || cookieToken;
   if (!token) return res.json({ user: null });
+
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET as string) as any;
     await connectDB();
