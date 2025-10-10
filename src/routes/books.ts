@@ -260,10 +260,41 @@ router.patch(
 router.get("/files/cover/:slug", async (req, res) => {
   await connectDB();
   const book = await Book.findOne({ slug: req.params.slug }).lean<BookLean | null>();
-  if (!book?.coverPath) return res.status(404).end();
-  res.setHeader("Content-Type", "image/jpeg");
-  res.setHeader("Cache-Control", "public, max-age=604800");
-  fs.createReadStream(book.coverPath).pipe(res);
+  const coverPath = book?.coverPath as string | undefined;
+  let finalCoverPath: string | null = null;
+
+  if (coverPath) {
+    try {
+      if (fs.existsSync(coverPath)) finalCoverPath = coverPath;
+    } catch { }
+  }
+
+  // fallback: placeholder in backend storage
+  const placeholderInStorage = path.join(storageDir, "placeholder.jpg");
+  try {
+    if (!finalCoverPath && fs.existsSync(placeholderInStorage)) finalCoverPath = placeholderInStorage;
+  } catch { }
+
+  // se temos um arquivo final para servir, stream ele
+  if (finalCoverPath) {
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    const stream = fs.createReadStream(finalCoverPath);
+    stream.on("error", (err) => {
+      console.error("Error streaming cover:", err);
+      try { if (!res.headersSent) res.status(404).end(); else res.end(); } catch { }
+    });
+    return stream.pipe(res);
+  }
+
+  // se não achou nada no backend, redireciona para placeholder público do frontend (se configurado)
+  const frontendOrigin = process.env.FRONTEND_ORIGIN?.split(",")?.[0];
+  if (frontendOrigin) {
+    const url = `${frontendOrigin.replace(/\/$/, "")}/placeholder.jpg`;
+    return res.redirect(url);
+  }
+
+  return res.status(404).end();
 });
 
 // PDF com suporte a Range
@@ -272,13 +303,24 @@ router.get("/files/pdf/:slug", async (req, res) => {
   const book = await Book.findOne({ slug: req.params.slug }).lean<BookLean | null>();
   if (!book?.pdfPath) return res.status(404).end();
 
-  const stat = fs.statSync(book.pdfPath);
+  const pdfPath = book.pdfPath as string;
+  let stat;
+  try {
+    stat = fs.statSync(pdfPath);
+  } catch (e) {
+    return res.status(404).end();
+  }
   const range = req.headers.range;
   if (!range) {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Length", String(stat.size));
     res.setHeader("Accept-Ranges", "bytes");
-    return fs.createReadStream(book.pdfPath).pipe(res);
+    const stream = fs.createReadStream(pdfPath);
+    stream.on("error", (err) => {
+      console.error("Error streaming pdf:", err);
+      try { if (!res.headersSent) res.status(404).end(); else res.end(); } catch { }
+    });
+    return stream.pipe(res);
   }
   const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
   const start = parseInt(startStr, 10);
@@ -289,7 +331,12 @@ router.get("/files/pdf/:slug", async (req, res) => {
   res.setHeader("Content-Length", String(chunk));
   res.setHeader("Content-Range", `bytes ${start}-${end}/${stat.size}`);
   res.setHeader("Accept-Ranges", "bytes");
-  fs.createReadStream(book.pdfPath, { start, end }).pipe(res);
+  const stream = fs.createReadStream(pdfPath, { start, end });
+  stream.on("error", (err) => {
+    console.error("Error streaming pdf range:", err);
+    try { if (!res.headersSent) res.status(404).end(); else res.end(); } catch { }
+  });
+  stream.pipe(res);
 });
 
 // DELETE /admin/books/:slug remove livro e arquivos
