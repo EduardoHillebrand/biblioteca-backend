@@ -6,6 +6,7 @@ import morgan from "morgan";
 import authRoutes from "./routes/auth";
 import bookRoutes from "./routes/books";
 import favRoutes from "./routes/favorites";
+import usersRoutes from "./routes/users";
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/auth", authRoutes);
 app.use(bookRoutes);
 app.use(favRoutes);
+app.use(usersRoutes);
 
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => console.log(`API on http://localhost:${port}`));

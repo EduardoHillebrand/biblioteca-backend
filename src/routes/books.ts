@@ -44,12 +44,12 @@ async function ensureUniqueSlug(base: string) {
 function removeIfExists(p: string) {
   try {
     fs.rmSync(p, { force: true });
-  } catch {}
+  } catch { }
 }
 function removeDirIfExists(dir: string) {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
-  } catch {}
+  } catch { }
 }
 
 // GET /books lista/pesquisa
@@ -163,6 +163,96 @@ router.post(
     });
 
     res.json({ id: book._id, slug: book.slug });
+  }
+);
+
+// PATCH /admin/books/:slug - atualiza livro (admin)
+router.patch(
+  "/admin/books/:slug",
+  requireAdmin,
+  upload.fields([
+    { name: "pdf", maxCount: 1 },
+    { name: "cover", maxCount: 1 },
+    { name: "meta", maxCount: 1 },
+  ]),
+  async (req: any, res) => {
+    await connectDB();
+
+    const slug = req.params.slug;
+    const book = await Book.findOne({ slug }).exec();
+    if (!book) return res.status(404).json({ error: "Não encontrado" });
+
+    const metaRaw = req.body.meta || (req.files?.meta?.[0] && req.files.meta[0].buffer.toString("utf8"));
+    let meta = {} as any;
+    if (metaRaw) {
+      try { meta = JSON.parse(metaRaw); } catch { return res.status(400).json({ error: "meta inválida" }); }
+    }
+
+    // atualiza campos básicos (posicao não é alterado aqui)
+    if (meta.title) book.title = meta.title;
+    if (meta.authors) book.authors = meta.authors;
+    if (meta.year !== undefined) book.year = meta.year;
+    if (meta.language !== undefined) book.language = meta.language;
+    if (meta.tags) book.tags = meta.tags;
+    if (meta.description !== undefined) book.description = meta.description;
+
+    // slug: se mudou, garante único e move arquivos de pasta
+    if (meta.slug && meta.slug !== slug) {
+      const baseSlug = meta.slug;
+      const newSlug = await ensureUniqueSlug(baseSlug);
+
+      const oldBookDir = path.join(storageDir, "books", slug);
+      const oldCoverDir = path.join(storageDir, "covers", slug);
+      const newBookDir = path.join(storageDir, "books", newSlug);
+      const newCoverDir = path.join(storageDir, "covers", newSlug);
+
+      try {
+        fs.mkdirSync(path.dirname(newBookDir), { recursive: true });
+        fs.mkdirSync(path.dirname(newCoverDir), { recursive: true });
+        if (fs.existsSync(oldBookDir)) fs.renameSync(oldBookDir, newBookDir);
+        if (fs.existsSync(oldCoverDir)) fs.renameSync(oldCoverDir, newCoverDir);
+      } catch (e) {
+        // ignore move errors
+      }
+
+      // atualiza caminhos se existirem
+      if (book.pdfPath) book.pdfPath = book.pdfPath.replace(`/books/${slug}/`, `/books/${newSlug}/`);
+      if (book.coverPath) book.coverPath = book.coverPath.replace(`/covers/${slug}/`, `/covers/${newSlug}/`);
+      book.slug = newSlug;
+      book.pdfUrl = `/files/pdf/${newSlug}`;
+      book.coverUrl = `/files/cover/${newSlug}`;
+    }
+
+    // arquivos enviados substituem os antigos
+    const pdfFile = req.files?.pdf?.[0];
+    const coverFile = req.files?.cover?.[0];
+    const targetSlug = book.slug;
+
+    if (pdfFile) {
+      const bookDir = path.join(storageDir, "books", targetSlug);
+      fs.mkdirSync(bookDir, { recursive: true });
+      // apaga pdf antigo
+      if (book.pdfPath) removeIfExists(book.pdfPath);
+      const pdfName = `${randomName(16)}.pdf`;
+      const pdfPath = path.join(bookDir, pdfName);
+      fs.writeFileSync(pdfPath, pdfFile.buffer);
+      book.pdfPath = pdfPath;
+      book.pdfUrl = `/files/pdf/${targetSlug}`;
+    }
+
+    if (coverFile) {
+      const coverDir = path.join(storageDir, "covers", targetSlug);
+      fs.mkdirSync(coverDir, { recursive: true });
+      if (book.coverPath) removeIfExists(book.coverPath);
+      const coverName = `${randomName(16)}.jpg`;
+      const coverPath = path.join(coverDir, coverName);
+      fs.writeFileSync(coverPath, coverFile.buffer);
+      book.coverPath = coverPath;
+      book.coverUrl = `/files/cover/${targetSlug}`;
+    }
+
+    await book.save();
+    return res.json({ id: book._id, slug: book.slug });
   }
 );
 
