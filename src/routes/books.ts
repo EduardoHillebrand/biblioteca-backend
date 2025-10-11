@@ -148,6 +148,10 @@ router.post(
     fs.writeFileSync(pdfPath, pdfFile.buffer);
     fs.writeFileSync(coverPath, coverFile.buffer);
 
+    // define posicao como max(posicao)+1 para colocar o livro no topo
+    const maxPos = await Book.find().sort({ posicao: -1 }).limit(1).select("posicao").lean<{ posicao?: number }[]>();
+    const nextPos = (maxPos[0]?.posicao ?? 0) + 1;
+
     const book = await Book.create({
       slug,
       title: meta.title,
@@ -158,13 +162,74 @@ router.post(
       description: meta.description,
       pdfPath,
       coverPath,
+      posicao: nextPos,
       pdfUrl: `/files/pdf/${slug}`, // continua servindo por slug
       coverUrl: `/files/cover/${slug}`, // idem
     });
 
+    // após criar, verifica posições e corrige se necessário
+    try {
+      const ok = await verifyPositions();
+      if (!ok) await fixPositions();
+    } catch (e) {
+      console.error("verifyPositions error", e);
+    }
+
     res.json({ id: book._id, slug: book.slug });
   }
 );
+
+// função utilitária: corrige posições para evitar duplicatas e gaps
+async function fixPositions() {
+  await connectDB();
+  // ordena por posicao desc, em caso de empate ordena por createdAt desc (mais recente primeiro)
+  const all = await Book.find().select("_id posicao createdAt").sort({ posicao: -1, createdAt: -1 }).lean<{ _id: any; posicao?: number; createdAt?: Date }[]>();
+
+  // queremos atribuir valores sem buracos, do maior para o menor, começando em N
+  const n = all.length;
+  const ops: any[] = [];
+  // mapping by _id position we'll set
+  for (let i = 0; i < all.length; i++) {
+    const target = n - i; // primeiro recebe n, último recebe 1
+    const item = all[i];
+    if ((item.posicao ?? 0) !== target) {
+      ops.push({ updateOne: { filter: { _id: item._id }, update: { $set: { posicao: target } } } });
+    }
+  }
+
+  if (ops.length) {
+    await Book.bulkWrite(ops);
+  }
+  return { total: n, fixed: ops.length };
+}
+
+// verifica se as posições estão corretas (1..N sem duplicatas/gaps); retorna true se estava ok
+async function verifyPositions(): Promise<boolean> {
+  await connectDB();
+  const all = await Book.find().select("posicao").lean<{ posicao?: number }[]>();
+  const n = all.length;
+  const posList = all.map(x => Number(x.posicao) || 0);
+  // set of positions
+  const posSet = new Set(posList.filter(p => p > 0));
+  // quick checks: must have exactly n unique positions and max position must be n
+  if (posSet.size !== n) return false;
+  const maxPos = Math.max(...posList, 0);
+  if (maxPos !== n) return false;
+  // ensure all numbers 1..n are present
+  for (let i = 1; i <= n; i++) if (!posSet.has(i)) return false;
+  return true;
+}
+
+// endpoint para forçar correção de posições
+router.post("/admin/books/fix-positions", requireAdmin, async (_req: any, res) => {
+  try {
+    const r = await fixPositions();
+    return res.json(r);
+  } catch (e) {
+    console.error("fixPositions error", e);
+    return res.status(500).json({ error: "Erro ao corrigir posições" });
+  }
+});
 
 // PATCH /admin/books/reorder - atualiza posições (array de slugs na ordem desejada)
 router.patch("/admin/books/reorder", requireAdmin, async (req: any, res) => {
