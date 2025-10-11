@@ -61,7 +61,7 @@ router.get("/books", async (req, res) => {
     tag,
     yearFrom,
     yearTo,
-    orderBy = "createdAt",
+    orderBy = "posicao",
     orderDir = "desc",
   } = req.query as any;
 
@@ -73,8 +73,8 @@ router.get("/books", async (req, res) => {
   if (yearTo) filter.year.$lte = Number(yearTo);
 
   const sort: Record<string, 1 | -1> = {};
-  const allowed = new Set(["createdAt", "year", "title"]);
-  const key = allowed.has(String(orderBy)) ? String(orderBy) : "createdAt";
+  const allowed = new Set(["createdAt", "year", "title", "posicao"]);
+  const key = allowed.has(String(orderBy)) ? String(orderBy) : "posicao";
   sort[key] = String(orderDir).toLowerCase() === "asc" ? 1 : -1;
 
   let query = Book.find(filter)
@@ -165,6 +165,33 @@ router.post(
     res.json({ id: book._id, slug: book.slug });
   }
 );
+
+// PATCH /admin/books/reorder - atualiza posições (array de slugs na ordem desejada)
+router.patch("/admin/books/reorder", requireAdmin, async (req: any, res) => {
+  await connectDB();
+  const { slugs } = req.body as { slugs?: string[] };
+  if (!Array.isArray(slugs)) return res.status(400).json({ error: "slugs é obrigatório (array)" });
+
+  // posicao: itens mais ao topo recebem valor maior
+  // exemplo: se slugs.length = N, primeiro recebe N, ultimo recebe 1
+  const n = slugs.length;
+  const ops = slugs.map((s, idx) => ({
+    updateOne: {
+      filter: { slug: s },
+      update: { $set: { posicao: n - idx } },
+    },
+  }));
+
+  try {
+    if (ops.length) {
+      await Book.bulkWrite(ops);
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("reorder error", e);
+    return res.status(500).json({ error: "Falha ao reordenar" });
+  }
+});
 
 // PATCH /admin/books/:slug - atualiza livro (admin)
 router.patch(
@@ -369,3 +396,4 @@ router.delete("/admin/books/:slug", requireAdmin, async (req, res) => {
 });
 
 export default router;
+
